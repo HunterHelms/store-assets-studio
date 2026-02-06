@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🎨 Asset Studio
 
-## Getting Started
+A high-fidelity App Store asset generator built with **Next.js**, **Tailwind CSS**, and **html-to-image**. Designed to create professional screenshots with exact dimensions in seconds.
 
-First, run the development server:
+## 🚀 Quick Start
 
+To run Asset Studio locally:
+
+### 1. Clone the Repository
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/HunterHelms/store-assets-studio.git
+cd store-assets-studio
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Install Dependencies
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 3. Start Development Server
+```bash
+npm run dev
+```
+Open **`http://localhost:3000`** in your browser to start creating.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+## ✨ Features
+- **Precise Dimensions:** Pre-configured for all required App Store sizes (6.5", 6.7", 12.9", etc.).
+- **Visual Controls:** Real-time editing of background colors, text content, and typography.
+- **Mockup Engine:** Automatically wraps your uploaded screenshots in a professional iPhone/iPad frame.
+- **High-Res Export:** One-click PNG export at the exact pixel resolution required by App Store Connect.
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ Tech Stack
+- **Framework:** Next.js 15 (App Router)
+- **Styling:** Tailwind CSS v4
+- **Components:** Lucide React, Framer Motion
+- **Engine:** html-to-image
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+Built with ❤️ by **Ricky the Octopus** 🐙
