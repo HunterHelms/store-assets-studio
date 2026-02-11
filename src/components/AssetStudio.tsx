@@ -133,6 +133,11 @@ export function AssetStudio() {
     "frame-2": { x: 0, y: 0, scale: 1.1 },
     "frame-3": { x: 0, y: 0, scale: 1.1 },
   });
+  const [deviceOffsets, setDeviceOffsets] = useState<Record<string, { x: number; y: number }>>({
+    "frame-1": { x: 0, y: 0 },
+    "frame-2": { x: 0, y: 0 },
+    "frame-3": { x: 0, y: 0 },
+  });
 
   const selectedText = textLayers.find((layer) => layer.id === selectedTextId) ?? null;
   const selectedTransform = screenshotTransforms[selectedFrameId] ?? { x: 0, y: 0, scale: 1 };
@@ -167,13 +172,13 @@ export function AssetStudio() {
     startY: number;
   } | null>(null);
 
-  const worldBounds = useMemo(() => {
-    const minX = Math.min(...frameLayout.map((frame) => frame.x));
-    const minY = Math.min(...frameLayout.map((frame) => frame.y));
-    const maxX = Math.max(...frameLayout.map((frame) => frame.x + frame.width));
-    const maxY = Math.max(...frameLayout.map((frame) => frame.y + frame.height));
-    return { minX, minY, width: maxX - minX, height: maxY - minY };
-  }, [frameLayout]);
+  const deviceDragRef = useRef<{
+    frameId: string;
+    pointerX: number;
+    pointerY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
 
   const clearTranslations = () => {
     setTranslatedTextByLanguage({});
@@ -548,9 +553,57 @@ export function AssetStudio() {
     screenshotDragRef.current = null;
   };
 
-  const panoramaBackground = panoramaImage
-    ? `url(${panoramaImage})`
-    : `linear-gradient(130deg, ${primaryBgColor} 0%, ${secondaryBgColor} 100%)`;
+  const onDevicePointerDown = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    event.stopPropagation();
+    setSelectedFrameId(frameId);
+
+    const offset = deviceOffsets[frameId] ?? { x: 0, y: 0 };
+    deviceDragRef.current = {
+      frameId,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      startX: offset.x,
+      startY: offset.y,
+    };
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onDevicePointerMove = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    const drag = deviceDragRef.current;
+    if (!drag || drag.frameId !== frameId) return;
+
+    const deltaX = event.clientX - drag.pointerX;
+    const deltaY = event.clientY - drag.pointerY;
+
+    setDeviceOffsets((current) => ({
+      ...current,
+      [frameId]: {
+        x: drag.startX + deltaX,
+        y: drag.startY + deltaY,
+      },
+    }));
+  };
+
+  const onDevicePointerUp = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    const drag = deviceDragRef.current;
+    if (!drag || drag.frameId !== frameId) return;
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    deviceDragRef.current = null;
+  };
+
+  // Canvas background: gradient or panorama image applied behind the devices
+  const canvasBackgroundStyle: React.CSSProperties = panoramaImage
+    ? {
+        backgroundImage: `url(${panoramaImage})`,
+        backgroundSize: `${Math.round(boardWidth * panoramaScale)}px ${Math.round(BOARD_HEIGHT * panoramaScale)}px`,
+        backgroundPosition: `${Math.round(panoramaOffset.x)}px ${Math.round(panoramaOffset.y)}px`,
+        backgroundRepeat: "no-repeat",
+      }
+    : {
+        background: `linear-gradient(130deg, ${primaryBgColor} 0%, ${secondaryBgColor} 100%)`,
+      };
 
   return (
     <div className="flex min-h-screen bg-[#05070d] text-slate-100">
@@ -959,14 +1012,14 @@ export function AssetStudio() {
 
           <div
             ref={canvasRef}
-            className="relative mx-auto overflow-hidden rounded-3xl border border-white/15 bg-[#050812]"
-            style={{ width: boardWidth, height: BOARD_HEIGHT }}
+            className="relative mx-auto overflow-hidden rounded-3xl border border-white/15"
+            style={{ width: boardWidth, height: BOARD_HEIGHT, ...canvasBackgroundStyle }}
             onPointerDown={() => {
               setEditingTextId(null);
             }}
           >
             <div
-              className="pointer-events-none absolute inset-0 opacity-25"
+              className="pointer-events-none absolute inset-0 opacity-15"
               style={{
                 backgroundImage:
                   "radial-gradient(circle at 25% 12%, rgba(255,255,255,.22), transparent 35%), radial-gradient(circle at 75% 65%, rgba(255,255,255,.16), transparent 35%)",
@@ -975,33 +1028,26 @@ export function AssetStudio() {
 
             {frameLayout.map((frame) => {
               const screenshotTransform = screenshotTransforms[frame.id] ?? { x: 0, y: 0, scale: 1 };
+              const offset = deviceOffsets[frame.id] ?? { x: 0, y: 0 };
               const frameScreenshot = screenshots[frame.id];
-              const backgroundStyle = {
-                backgroundImage: panoramaBackground,
-                backgroundSize: `${Math.round(worldBounds.width * panoramaScale)}px ${Math.round(worldBounds.height * panoramaScale)}px`,
-                backgroundPosition: `${Math.round(panoramaOffset.x - (frame.x - worldBounds.minX))}px ${Math.round(
-                  panoramaOffset.y - (frame.y - worldBounds.minY),
-                )}px`,
-              };
 
               return (
                 <div
                   key={frame.id}
-                  className={`absolute rounded-[52px] border-[14px] border-slate-200 bg-[#e5e7eb] shadow-[0_20px_40px_rgba(0,0,0,0.35)] ${
+                  className={`absolute cursor-grab rounded-[52px] border-[14px] border-slate-200 bg-[#e5e7eb] shadow-[0_20px_40px_rgba(0,0,0,0.35)] active:cursor-grabbing ${
                     selectedFrameId === frame.id ? "ring-4 ring-cyan-300/70" : ""
                   }`}
                   style={{
-                    left: frame.x,
-                    top: frame.y,
+                    left: frame.x + offset.x,
+                    top: frame.y + offset.y,
                     width: frame.width,
                     height: frame.height,
                   }}
-                  onClick={() => setSelectedFrameId(frame.id)}
+                  onPointerDown={(event) => onDevicePointerDown(event, frame.id)}
+                  onPointerMove={(event) => onDevicePointerMove(event, frame.id)}
+                  onPointerUp={(event) => onDevicePointerUp(event, frame.id)}
                 >
-                  <div
-                    className="relative h-full w-full overflow-hidden rounded-[38px] bg-[#121a2f]"
-                    style={backgroundStyle}
-                  >
+                  <div className="relative h-full w-full overflow-hidden rounded-[38px] bg-[#121a2f]">
                     {frameScreenshot ? (
                       <div
                         className="absolute inset-0 cursor-grab active:cursor-grabbing"
@@ -1112,7 +1158,7 @@ export function AssetStudio() {
               className="pointer-events-none absolute bottom-5 left-6 flex items-center gap-2 rounded-full bg-black/40 px-4 py-2 text-xs text-slate-200 backdrop-blur"
             >
               <Move className="h-3.5 w-3.5" />
-              Click text to edit, drag to reposition. Click frame to select, upload per-frame screenshots.
+              Drag devices to reposition. Drag screenshots inside frames. Click text to edit.
             </div>
           </div>
         </div>
