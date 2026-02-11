@@ -1,238 +1,952 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { SCREENSHOT_SIZES } from "@/lib/constants";
 import { toPng } from "html-to-image";
-import { 
-  Download, 
-  Type, 
-  Image as ImageIcon, 
-  Monitor, 
-  Trash2, 
-  Plus, 
-  ChevronRight,
-  Maximize2,
-  Palette
+import {
+  Download,
+  Type,
+  Image as ImageIcon,
+  Monitor,
+  Trash2,
+  Plus,
+  Mountain,
+  Move,
+  Scaling,
+  Languages,
+  LoaderCircle,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
 
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
+type TextLayer = {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  color: string;
+};
+
+type ScreenshotTransform = {
+  x: number;
+  y: number;
+  scale: number;
+};
+
+type LanguageOption = {
+  code: string;
+  label: string;
+};
+
+const FONT_OPTIONS = [
+  { label: "Space Grotesk", value: '"Space Grotesk", sans-serif' },
+  { label: "Poppins", value: '"Poppins", sans-serif' },
+  { label: "Playfair Display", value: '"Playfair Display", serif' },
+  { label: "Bebas Neue", value: '"Bebas Neue", sans-serif' },
+  { label: "DM Sans", value: '"DM Sans", sans-serif' },
+];
+
+const BOARD_WIDTH = 1520;
+const BOARD_HEIGHT = 940;
+const DEVICE_HEIGHT = 620;
+const DEVICE_GAP = 72;
+const SCREEN_INSET = 18;
+const SOURCE_LANGUAGE = "source";
+const SOURCE_LANGUAGE_LABEL = "Original (English)";
+const TRANSLATION_LANGUAGES: LanguageOption[] = [
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "ja", label: "Japanese" },
+  { code: "de", label: "German" },
+  { code: "pt", label: "Portuguese" },
+  { code: "it", label: "Italian" },
+  { code: "ko", label: "Korean" },
+  { code: "zh", label: "Chinese (Simplified)" },
+];
+
+function uid(prefix: string) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export function AssetStudio() {
-  const [selectedSize, setSelectedSize] = useState(SCREENSHOT_SIZES[0]);
-  const [bgColor, setBgColor] = useState("#0D9488");
-  const [title, setTitle] = useState("Perfect Photos");
-  const [titleColor, setTitleColor] = useState("#ffffff");
-  const [titleSize, setTitleSize] = useState(120);
+  const [selectedSize, setSelectedSize] = useState(SCREENSHOT_SIZES[2]);
   const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [panoramaImage, setPanoramaImage] = useState<string | null>(null);
+  const [panoramaScale, setPanoramaScale] = useState(1);
+  const [panoramaOffset, setPanoramaOffset] = useState({ x: 0, y: 0 });
+  const [primaryBgColor, setPrimaryBgColor] = useState("#0ea5a8");
+  const [secondaryBgColor, setSecondaryBgColor] = useState("#0f172a");
+
+  const [textLayers, setTextLayers] = useState<TextLayer[]>([
+    {
+      id: uid("text"),
+      text: "Build fast. Ship sharp.",
+      x: 230,
+      y: 88,
+      fontFamily: FONT_OPTIONS[0].value,
+      fontSize: 84,
+      fontWeight: 700,
+      color: "#ffffff",
+    },
+  ]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(textLayers[0]?.id ?? null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [selectedTargetLanguages, setSelectedTargetLanguages] = useState<string[]>(["es", "fr", "ja"]);
+  const [translatedTextByLanguage, setTranslatedTextByLanguage] = useState<Record<string, Record<string, string>>>({});
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [isExportingAll, setIsExportingAll] = useState(false);
+  const [translationError, setTranslationError] = useState<string | null>(null);
+  const [activeStoryboardLanguage, setActiveStoryboardLanguage] = useState(SOURCE_LANGUAGE);
+
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  const aspectRatio = selectedSize.width / selectedSize.height;
+  const deviceWidth = Math.round(DEVICE_HEIGHT * aspectRatio);
+
+  const frameLayout = useMemo(() => {
+    const totalWidth = deviceWidth * 3 + DEVICE_GAP * 2;
+    const startX = Math.round((BOARD_WIDTH - totalWidth) / 2);
+    const y = 190;
+
+    return [0, 1, 2].map((index) => ({
+      id: `frame-${index + 1}`,
+      x: startX + index * (deviceWidth + DEVICE_GAP),
+      y,
+      width: deviceWidth,
+      height: DEVICE_HEIGHT,
+    }));
+  }, [deviceWidth]);
+
+  const [selectedFrameId, setSelectedFrameId] = useState("frame-2");
+  const [screenshotTransforms, setScreenshotTransforms] = useState<Record<string, ScreenshotTransform>>({
+    "frame-1": { x: 0, y: 0, scale: 1.1 },
+    "frame-2": { x: 0, y: 0, scale: 1.1 },
+    "frame-3": { x: 0, y: 0, scale: 1.1 },
+  });
+
+  const selectedText = textLayers.find((layer) => layer.id === selectedTextId) ?? null;
+  const selectedTransform = screenshotTransforms[selectedFrameId] ?? { x: 0, y: 0, scale: 1 };
+  const canEditSourceText = activeStoryboardLanguage === SOURCE_LANGUAGE;
+
+  const availableStoryboardLanguages = useMemo(() => {
+    const translatedLanguages = selectedTargetLanguages
+      .filter((code) => translatedTextByLanguage[code])
+      .map((code) => ({
+        code,
+        label: TRANSLATION_LANGUAGES.find((lang) => lang.code === code)?.label ?? code.toUpperCase(),
+      }));
+
+    return [{ code: SOURCE_LANGUAGE, label: SOURCE_LANGUAGE_LABEL }, ...translatedLanguages];
+  }, [selectedTargetLanguages, translatedTextByLanguage]);
+
+  const textDragRef = useRef<{
+    id: string;
+    pointerX: number;
+    pointerY: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+
+  const screenshotDragRef = useRef<{
+    frameId: string;
+    pointerX: number;
+    pointerY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const worldBounds = useMemo(() => {
+    const minX = Math.min(...frameLayout.map((frame) => frame.x));
+    const minY = Math.min(...frameLayout.map((frame) => frame.y));
+    const maxX = Math.max(...frameLayout.map((frame) => frame.x + frame.width));
+    const maxY = Math.max(...frameLayout.map((frame) => frame.y + frame.height));
+    return { minX, minY, width: maxX - minX, height: maxY - minY };
+  }, [frameLayout]);
+
+  const clearTranslations = () => {
+    setTranslatedTextByLanguage({});
+    setTranslationError(null);
+    if (activeStoryboardLanguage !== SOURCE_LANGUAGE) {
+      setActiveStoryboardLanguage(SOURCE_LANGUAGE);
+    }
+  };
+
+  const getRenderedLayerText = (layer: TextLayer) => {
+    if (activeStoryboardLanguage === SOURCE_LANGUAGE) {
+      return layer.text;
+    }
+
+    return translatedTextByLanguage[activeStoryboardLanguage]?.[layer.id] ?? layer.text;
+  };
+
+  const waitForRender = async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  };
+
+  const updateSelectedText = (patch: Partial<TextLayer>) => {
+    if (!selectedTextId) return;
+    setTextLayers((current) =>
+      current.map((layer) => (layer.id === selectedTextId ? { ...layer, ...patch } : layer)),
+    );
+  };
+
+  const addTextLayer = () => {
+    const newLayer: TextLayer = {
+      id: uid("text"),
+      text: "Click to edit",
+      x: BOARD_WIDTH / 2 - 180,
+      y: 130,
+      fontFamily: FONT_OPTIONS[1].value,
+      fontSize: 64,
+      fontWeight: 700,
+      color: "#f8fafc",
+    };
+    setTextLayers((current) => [...current, newLayer]);
+    clearTranslations();
+    setSelectedTextId(newLayer.id);
+    setEditingTextId(newLayer.id);
+  };
+
+  const removeSelectedText = () => {
+    if (!selectedTextId) return;
+    setTextLayers((current) => current.filter((layer) => layer.id !== selectedTextId));
+    clearTranslations();
+    setSelectedTextId(null);
+    setEditingTextId(null);
+  };
+
   const handleExport = async () => {
-    if (canvasRef.current === null) return;
-    
+    if (!canvasRef.current) return;
+
     const dataUrl = await toPng(canvasRef.current, {
-      width: selectedSize.width,
-      height: selectedSize.height,
-      style: {
-        transform: "scale(1)",
-      }
+      pixelRatio: 2,
+      cacheBust: true,
     });
-    
+
     const link = document.createElement("a");
-    link.download = `screenshot-${selectedSize.id}.png`;
+    link.download = `store-assets-studio-${selectedSize.id}.png`;
     link.href = dataUrl;
     link.click();
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setScreenshot(event.target?.result as string);
+  const handleTranslate = async () => {
+    if (!textLayers.length || !selectedTargetLanguages.length) return;
+
+    setIsTranslating(true);
+    setTranslationError(null);
+
+    try {
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceLanguage: "en",
+          targetLanguages: selectedTargetLanguages,
+          texts: textLayers.map((layer) => layer.text),
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        translations?: Record<string, string[]>;
+        error?: string;
+        details?: string;
       };
-      reader.readAsDataURL(file);
+
+      if (!response.ok || !payload.translations) {
+        throw new Error(payload.error ?? "Translation failed.");
+      }
+
+      const mapped: Record<string, Record<string, string>> = {};
+
+      for (const [languageCode, translatedTexts] of Object.entries(payload.translations)) {
+        const perLayer: Record<string, string> = {};
+        textLayers.forEach((layer, index) => {
+          perLayer[layer.id] = translatedTexts[index] ?? layer.text;
+        });
+        mapped[languageCode] = perLayer;
+      }
+
+      setTranslatedTextByLanguage(mapped);
+      const firstTranslatedLanguage = selectedTargetLanguages.find((code) => mapped[code]);
+      if (firstTranslatedLanguage) {
+        setActiveStoryboardLanguage(firstTranslatedLanguage);
+      }
+    } catch (error) {
+      setTranslationError(error instanceof Error ? error.message : "Translation request failed.");
+    } finally {
+      setIsTranslating(false);
     }
   };
 
+  const handleExportAll = async () => {
+    if (!canvasRef.current) return;
+
+    const languagesToExport = selectedTargetLanguages.filter((code) => translatedTextByLanguage[code]);
+
+    if (!languagesToExport.length) {
+      setTranslationError("Translate at least one selected language before exporting all.");
+      return;
+    }
+
+    setIsExportingAll(true);
+    setTranslationError(null);
+
+    const previousLanguage = activeStoryboardLanguage;
+
+    try {
+      const JSZip = (await import("jszip")).default;
+      const zip = new JSZip();
+
+      for (const code of languagesToExport) {
+        setActiveStoryboardLanguage(code);
+        await waitForRender();
+
+        const dataUrl = await toPng(canvasRef.current, {
+          pixelRatio: 2,
+          cacheBust: true,
+        });
+
+        const base64Data = dataUrl.split(",")[1];
+        zip.file(`store-assets-studio-${selectedSize.id}-${code}.png`, base64Data, { base64: true });
+      }
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `store-assets-studio-${selectedSize.id}-all-languages.zip`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } catch (error) {
+      setTranslationError(error instanceof Error ? error.message : "Failed to export all languages.");
+    } finally {
+      setActiveStoryboardLanguage(previousLanguage);
+      setIsExportingAll(false);
+    }
+  };
+
+  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>, target: "screenshot" | "panorama") => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const imageData = e.target?.result as string;
+      if (target === "screenshot") {
+        setScreenshot(imageData);
+      } else {
+        setPanoramaImage(imageData);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const toggleTargetLanguage = (code: string) => {
+    setSelectedTargetLanguages((current) => {
+      const next = current.includes(code) ? current.filter((item) => item !== code) : [...current, code];
+
+      if (activeStoryboardLanguage !== SOURCE_LANGUAGE && !next.includes(activeStoryboardLanguage)) {
+        setActiveStoryboardLanguage(SOURCE_LANGUAGE);
+      }
+
+      return next;
+    });
+  };
+
+  const onTextPointerDown = (event: React.PointerEvent<HTMLDivElement>, layer: TextLayer) => {
+    if (editingTextId === layer.id) return;
+    event.stopPropagation();
+    setSelectedTextId(layer.id);
+
+    textDragRef.current = {
+      id: layer.id,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      startX: layer.x,
+      startY: layer.y,
+      moved: false,
+    };
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onTextPointerMove = (event: React.PointerEvent<HTMLDivElement>, layerId: string) => {
+    const drag = textDragRef.current;
+    if (!drag || drag.id !== layerId) return;
+
+    const deltaX = event.clientX - drag.pointerX;
+    const deltaY = event.clientY - drag.pointerY;
+
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+      drag.moved = true;
+    }
+
+    setTextLayers((current) =>
+      current.map((layer) =>
+        layer.id === layerId
+          ? {
+              ...layer,
+              x: drag.startX + deltaX,
+              y: drag.startY + deltaY,
+            }
+          : layer,
+      ),
+    );
+  };
+
+  const onTextPointerUp = (event: React.PointerEvent<HTMLDivElement>, layerId: string) => {
+    const drag = textDragRef.current;
+    if (!drag || drag.id !== layerId) return;
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    if (!drag.moved && canEditSourceText) {
+      setEditingTextId(layerId);
+      setSelectedTextId(layerId);
+    }
+
+    textDragRef.current = null;
+  };
+
+  const onScreenshotPointerDown = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    if (!screenshot) return;
+    event.stopPropagation();
+    setSelectedFrameId(frameId);
+
+    const transform = screenshotTransforms[frameId] ?? { x: 0, y: 0, scale: 1 };
+    screenshotDragRef.current = {
+      frameId,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      startX: transform.x,
+      startY: transform.y,
+    };
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onScreenshotPointerMove = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    const drag = screenshotDragRef.current;
+    if (!drag || drag.frameId !== frameId) return;
+
+    const deltaX = event.clientX - drag.pointerX;
+    const deltaY = event.clientY - drag.pointerY;
+
+    setScreenshotTransforms((current) => ({
+      ...current,
+      [frameId]: {
+        ...(current[frameId] ?? { x: 0, y: 0, scale: 1 }),
+        x: drag.startX + deltaX,
+        y: drag.startY + deltaY,
+      },
+    }));
+  };
+
+  const onScreenshotPointerUp = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
+    const drag = screenshotDragRef.current;
+    if (!drag || drag.frameId !== frameId) return;
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    screenshotDragRef.current = null;
+  };
+
+  const panoramaBackground = panoramaImage
+    ? `url(${panoramaImage})`
+    : `linear-gradient(130deg, ${primaryBgColor} 0%, ${secondaryBgColor} 100%)`;
+
   return (
-    <div className="flex h-screen bg-[#0a0a0a] overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-80 bg-neutral-900 border-r border-white/5 flex flex-col z-20 shadow-2xl">
-        <div className="p-6 border-b border-white/5">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center font-black italic">A</div>
-            <h1 className="text-xl font-black tracking-tighter uppercase italic">Asset Studio</h1>
-          </div>
-          <p className="text-xs text-neutral-500 font-bold uppercase tracking-widest">App Store Generator</p>
+    <div className="flex min-h-screen bg-[#05070d] text-slate-100">
+      <aside className="w-[360px] shrink-0 border-r border-white/10 bg-[#0a1020]">
+        <div className="border-b border-white/10 p-6">
+          <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Store Assets Studio</p>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight" style={{ fontFamily: '"Space Grotesk", sans-serif' }}>
+            AppScreens-style Editor
+          </h1>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
-          {/* Size Selection */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-neutral-400">
-              <Monitor className="w-4 h-4" />
-              <h3 className="text-xs font-black uppercase tracking-widest">Dimensions</h3>
+        <div className="custom-scrollbar h-[calc(100vh-129px)] space-y-8 overflow-y-auto p-6">
+          <section className="space-y-3">
+            <div className="flex items-center gap-2 text-slate-300">
+              <Monitor className="h-4 w-4" />
+              <h2 className="text-xs uppercase tracking-[0.16em]">Target Size</h2>
             </div>
             <div className="space-y-2">
               {SCREENSHOT_SIZES.map((size) => (
                 <button
                   key={size.id}
                   onClick={() => setSelectedSize(size)}
-                  className={cn(
-                    "w-full text-left px-4 py-3 rounded-xl border transition-all text-sm font-bold",
+                  className={`w-full rounded-xl border p-3 text-left transition ${
                     selectedSize.id === size.id
-                      ? "bg-white text-black border-white"
-                      : "bg-white/5 text-neutral-400 border-transparent hover:bg-white/10"
-                  )}
+                      ? "border-cyan-300/80 bg-cyan-400/10"
+                      : "border-white/10 bg-white/5 hover:bg-white/10"
+                  }`}
                 >
-                  <p className="truncate">{size.name}</p>
-                  <p className="text-[10px] opacity-50">{size.width} x {size.height} px</p>
+                  <p className="text-sm font-semibold">{size.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {size.width} x {size.height}
+                  </p>
                 </button>
               ))}
             </div>
-          </div>
+          </section>
 
-          {/* Background */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-neutral-400">
-              <Palette className="w-4 h-4" />
-              <h3 className="text-xs font-black uppercase tracking-widest">Background</h3>
+          <section className="space-y-3">
+            <div className="flex items-center gap-2 text-slate-300">
+              <Mountain className="h-4 w-4" />
+              <h2 className="text-xs uppercase tracking-[0.16em]">Panoramic Background</h2>
             </div>
-            <div className="flex gap-2 flex-wrap">
-              {["#0D9488", "#e31b23", "#000000", "#ffffff", "#ff6600", "#7c3aed"].map((color) => (
-                <button
-                  key={color}
-                  onClick={() => setBgColor(color)}
-                  className={cn(
-                    "w-8 h-8 rounded-full border-2 transition-transform active:scale-90",
-                    bgColor === color ? "border-white scale-110" : "border-transparent"
-                  )}
-                  style={{ backgroundColor: color }}
+            <div className="grid grid-cols-2 gap-3">
+              <label className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs">
+                <span className="mb-2 block text-slate-300">Primary</span>
+                <input
+                  type="color"
+                  value={primaryBgColor}
+                  onChange={(e) => setPrimaryBgColor(e.target.value)}
+                  className="h-10 w-full rounded-md bg-transparent"
                 />
-              ))}
-              <input 
-                type="color" 
-                value={bgColor} 
-                onChange={(e) => setBgColor(e.target.value)}
-                className="w-8 h-8 rounded-full bg-transparent border-none cursor-pointer"
+              </label>
+              <label className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs">
+                <span className="mb-2 block text-slate-300">Secondary</span>
+                <input
+                  type="color"
+                  value={secondaryBgColor}
+                  onChange={(e) => setSecondaryBgColor(e.target.value)}
+                  className="h-10 w-full rounded-md bg-transparent"
+                />
+              </label>
+            </div>
+            <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.03] p-4 text-sm hover:bg-white/10">
+              <ImageIcon className="mr-2 h-4 w-4" />
+              {panoramaImage ? "Replace panorama image" : "Upload panorama image"}
+              <input
+                type="file"
+                className="hidden"
+                accept="image/*"
+                onChange={(e) => handleUpload(e, "panorama")}
               />
+            </label>
+            <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs">
+              <label className="block">
+                <span className="mb-2 flex items-center gap-1 text-slate-300">
+                  <Scaling className="h-3.5 w-3.5" /> Scale: {panoramaScale.toFixed(2)}
+                </span>
+                <input
+                  type="range"
+                  min="0.6"
+                  max="1.8"
+                  step="0.01"
+                  value={panoramaScale}
+                  onChange={(e) => setPanoramaScale(Number(e.target.value))}
+                  className="w-full"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Offset X: {Math.round(panoramaOffset.x)}px</span>
+                <input
+                  type="range"
+                  min="-500"
+                  max="500"
+                  step="1"
+                  value={panoramaOffset.x}
+                  onChange={(e) => setPanoramaOffset((prev) => ({ ...prev, x: Number(e.target.value) }))}
+                  className="w-full"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Offset Y: {Math.round(panoramaOffset.y)}px</span>
+                <input
+                  type="range"
+                  min="-500"
+                  max="500"
+                  step="1"
+                  value={panoramaOffset.y}
+                  onChange={(e) => setPanoramaOffset((prev) => ({ ...prev, y: Number(e.target.value) }))}
+                  className="w-full"
+                />
+              </label>
             </div>
-          </div>
+          </section>
 
-          {/* Text Controls */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-neutral-400">
-              <Type className="w-4 h-4" />
-              <h3 className="text-xs font-black uppercase tracking-widest">Headline</h3>
+          <section className="space-y-3">
+            <div className="flex items-center gap-2 text-slate-300">
+              <ImageIcon className="h-4 w-4" />
+              <h2 className="text-xs uppercase tracking-[0.16em]">Screenshot</h2>
             </div>
-            <textarea
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-orange-500/50 transition-all font-bold min-h-[100px]"
-              placeholder="Headline text..."
-            />
-            <div className="flex items-center gap-4">
-               <div className="flex-1 space-y-2">
-                 <p className="text-[10px] font-black text-neutral-500 uppercase tracking-widest">Font Size</p>
-                 <input 
-                  type="range" 
-                  min="40" 
-                  max="200" 
-                  value={titleSize} 
-                  onChange={(e) => setTitleSize(parseInt(e.target.value))}
-                  className="w-full accent-orange-600"
-                 />
-               </div>
-               <input 
-                type="color" 
-                value={titleColor} 
-                onChange={(e) => setTitleColor(e.target.value)}
-                className="w-8 h-8 rounded-full bg-transparent border-none cursor-pointer mt-4"
+            <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.03] p-4 text-sm hover:bg-white/10">
+              <ImageIcon className="mr-2 h-4 w-4" />
+              {screenshot ? "Replace app screenshot" : "Upload app screenshot"}
+              <input
+                type="file"
+                className="hidden"
+                accept="image/*"
+                onChange={(e) => handleUpload(e, "screenshot")}
               />
-            </div>
-          </div>
-
-          {/* Screenshot Upload */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-neutral-400">
-              <ImageIcon className="w-4 h-4" />
-              <h3 className="text-xs font-black uppercase tracking-widest">App Screenshot</h3>
-            </div>
+            </label>
             {screenshot ? (
-              <div className="relative rounded-xl overflow-hidden group">
-                <img src={screenshot} alt="Preview" className="w-full h-32 object-cover opacity-50" />
-                <button 
+              <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs">
+                <p className="text-slate-300">Selected frame: {selectedFrameId.replace("frame-", "#")}</p>
+                <label className="block">
+                  <span className="mb-2 block text-slate-300">Scale: {selectedTransform.scale.toFixed(2)}</span>
+                  <input
+                    type="range"
+                    min="0.8"
+                    max="2"
+                    step="0.01"
+                    value={selectedTransform.scale}
+                    onChange={(e) =>
+                      setScreenshotTransforms((current) => ({
+                        ...current,
+                        [selectedFrameId]: {
+                          ...(current[selectedFrameId] ?? { x: 0, y: 0, scale: 1 }),
+                          scale: Number(e.target.value),
+                        },
+                      }))
+                    }
+                    className="w-full"
+                  />
+                </label>
+                <button
                   onClick={() => setScreenshot(null)}
-                  className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-rose-200 hover:bg-rose-500/20"
                 >
-                  <Trash2 className="w-6 h-6 text-red-500" />
+                  <Trash2 className="h-3.5 w-3.5" /> Remove screenshot
                 </button>
               </div>
-            ) : (
-              <label className="w-full h-32 border-2 border-dashed border-white/10 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/5 transition-all group">
-                <Plus className="w-8 h-8 text-neutral-600 group-hover:text-white transition-colors" />
-                <span className="text-[10px] font-black text-neutral-600 mt-2 uppercase tracking-widest group-hover:text-white transition-colors">Upload image</span>
-                <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+            ) : null}
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center gap-2 text-slate-300">
+              <Languages className="h-4 w-4" />
+              <h2 className="text-xs uppercase tracking-[0.16em]">Translation</h2>
+            </div>
+            <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm">
+              {TRANSLATION_LANGUAGES.map((language) => {
+                const checked = selectedTargetLanguages.includes(language.code);
+                const translated = Boolean(translatedTextByLanguage[language.code]);
+                return (
+                  <label key={language.code} className="flex cursor-pointer items-center justify-between gap-3">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleTargetLanguage(language.code)}
+                        className="h-4 w-4 rounded border-white/30 bg-transparent"
+                      />
+                      <span>{language.label}</span>
+                    </span>
+                    <span className={`text-xs ${translated ? "text-emerald-300" : "text-slate-500"}`}>
+                      {translated ? "Ready" : "Not translated"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <button
+              onClick={handleTranslate}
+              disabled={!selectedTargetLanguages.length || !textLayers.length || isTranslating}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-300/40 bg-cyan-400/10 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isTranslating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Languages className="h-4 w-4" />}
+              {isTranslating ? "Translating..." : "Translate Selected Languages"}
+            </button>
+            {translationError ? (
+              <p className="rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                {translationError}
+              </p>
+            ) : null}
+            {!canEditSourceText ? (
+              <p className="text-xs text-amber-200/90">Switch to Original (English) to edit text content.</p>
+            ) : null}
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center gap-2 text-slate-300">
+              <Type className="h-4 w-4" />
+              <h2 className="text-xs uppercase tracking-[0.16em]">Text Layers</h2>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={addTextLayer}
+                disabled={!canEditSourceText}
+                className="flex items-center justify-center gap-2 rounded-xl border border-cyan-300/40 bg-cyan-400/10 px-3 py-2 text-sm hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add Text
+              </button>
+              <button
+                onClick={removeSelectedText}
+                disabled={!selectedText || !canEditSourceText}
+                className="rounded-xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Delete
+              </button>
+            </div>
+            <div className="space-y-2">
+              {textLayers.map((layer) => (
+                <button
+                  key={layer.id}
+                  onClick={() => {
+                    setSelectedTextId(layer.id);
+                    if (canEditSourceText) {
+                      setEditingTextId(layer.id);
+                    }
+                  }}
+                  className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
+                    selectedTextId === layer.id
+                      ? "border-cyan-300/70 bg-cyan-400/10"
+                      : "border-white/10 bg-white/[0.03]"
+                  }`}
+                >
+                  {getRenderedLayerText(layer) || "(empty text)"}
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs">
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Font Family</span>
+                <select
+                  value={selectedText?.fontFamily ?? ""}
+                  onChange={(e) => updateSelectedText({ fontFamily: e.target.value })}
+                  className="w-full rounded-lg border border-white/10 bg-[#0d1529] px-3 py-2 text-sm"
+                  disabled={!selectedText}
+                >
+                  {FONT_OPTIONS.map((font) => (
+                    <option key={font.label} value={font.value}>
+                      {font.label}
+                    </option>
+                  ))}
+                </select>
               </label>
-            )}
-          </div>
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Font Size: {selectedText?.fontSize ?? 0}px</span>
+                <input
+                  type="range"
+                  min="28"
+                  max="170"
+                  step="1"
+                  value={selectedText?.fontSize ?? 28}
+                  onChange={(e) => updateSelectedText({ fontSize: Number(e.target.value) })}
+                  className="w-full"
+                  disabled={!selectedText}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Font Weight</span>
+                <select
+                  value={selectedText?.fontWeight ?? 700}
+                  onChange={(e) => updateSelectedText({ fontWeight: Number(e.target.value) })}
+                  className="w-full rounded-lg border border-white/10 bg-[#0d1529] px-3 py-2 text-sm"
+                  disabled={!selectedText}
+                >
+                  {[400, 500, 600, 700, 800, 900].map((weight) => (
+                    <option key={weight} value={weight}>
+                      {weight}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-slate-300">Color</span>
+                <input
+                  type="color"
+                  value={selectedText?.color ?? "#ffffff"}
+                  onChange={(e) => updateSelectedText({ color: e.target.value })}
+                  className="h-10 w-full rounded-lg bg-transparent"
+                  disabled={!selectedText}
+                />
+              </label>
+            </div>
+          </section>
         </div>
 
-        <div className="p-6 border-t border-white/5 bg-neutral-950/50 backdrop-blur-xl">
-          <button 
-            onClick={handleExport}
-            className="w-full bg-orange-600 hover:bg-orange-500 text-white py-4 rounded-2xl font-black text-lg shadow-2xl shadow-orange-600/20 flex items-center justify-center gap-2 transition-all transform active:scale-95"
-          >
-            <Download className="w-5 h-5" />
-            Export Image
-          </button>
+        <div className="border-t border-white/10 p-6">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={handleExport}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-300"
+            >
+              <Download className="h-4 w-4" /> Export Board
+            </button>
+            <button
+              onClick={handleExportAll}
+              disabled={isExportingAll}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-300/40 bg-cyan-400/10 px-4 py-3 font-semibold text-cyan-100 hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isExportingAll ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isExportingAll ? "Exporting..." : "Export All ZIP"}
+            </button>
+          </div>
         </div>
       </aside>
 
-      {/* Main Canvas Area */}
-      <main className="flex-1 relative flex items-center justify-center bg-neutral-950 p-12 overflow-auto custom-scrollbar">
-        <div 
-          className="relative shadow-[0_0_100px_rgba(0,0,0,0.5)] transform origin-center transition-all duration-500 overflow-hidden"
-          style={{ 
-            width: selectedSize.width, 
-            height: selectedSize.height,
-            transform: `scale(${Math.min(0.2, (800 / selectedSize.height))})`,
-            backgroundColor: bgColor
-          }}
-          ref={canvasRef}
-        >
-          {/* Header Text */}
-          <div className="absolute top-[10%] left-0 right-0 text-center px-20 z-10">
-            <h2 
-              className="font-black tracking-tighter leading-[0.9] whitespace-pre-wrap italic"
-              style={{ fontSize: `${titleSize}px`, color: titleColor }}
-            >
-              {title}
-            </h2>
+      <main className="custom-scrollbar flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#1d2747_0%,#05070d_55%)] p-8">
+        <div className="mx-auto min-w-[1220px] rounded-3xl border border-white/10 bg-[#080d1a]/70 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {availableStoryboardLanguages.map((language) => (
+                <button
+                  key={language.code}
+                  onClick={() => {
+                    setActiveStoryboardLanguage(language.code);
+                    setEditingTextId(null);
+                  }}
+                  className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                    activeStoryboardLanguage === language.code
+                      ? "border-cyan-300/80 bg-cyan-400/20 text-cyan-100"
+                      : "border-white/20 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                  }`}
+                >
+                  {language.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400">
+              Storyboard language:{" "}
+              {availableStoryboardLanguages.find((language) => language.code === activeStoryboardLanguage)?.label}
+            </p>
           </div>
 
-          {/* Screenshot Mockup */}
-          {screenshot && (
-            <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[85%] h-[70%] z-0">
-               <div className="relative w-full h-full bg-neutral-900 border-[16px] border-white rounded-[6rem] p-4 shadow-2xl overflow-hidden">
-                  <div className="w-full h-full bg-black rounded-[4.5rem] overflow-hidden">
-                     <img src={screenshot} alt="App Content" className="w-full h-full object-cover" />
-                  </div>
-               </div>
-            </div>
-          )}
-        </div>
+          <div
+            ref={canvasRef}
+            className="relative mx-auto overflow-hidden rounded-3xl border border-white/15 bg-[#050812]"
+            style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT }}
+            onPointerDown={() => {
+              setEditingTextId(null);
+            }}
+          >
+            <div
+              className="pointer-events-none absolute inset-0 opacity-25"
+              style={{
+                backgroundImage:
+                  "radial-gradient(circle at 25% 12%, rgba(255,255,255,.22), transparent 35%), radial-gradient(circle at 75% 65%, rgba(255,255,255,.16), transparent 35%)",
+              }}
+            />
 
-        {/* Canvas Background Glow */}
-        <div 
-          className="absolute inset-0 pointer-events-none opacity-20 blur-[150px]"
-          style={{ backgroundColor: bgColor }}
-        />
+            {frameLayout.map((frame) => {
+              const screenshotTransform = screenshotTransforms[frame.id] ?? { x: 0, y: 0, scale: 1 };
+              const backgroundStyle = {
+                backgroundImage: panoramaBackground,
+                backgroundSize: `${Math.round(worldBounds.width * panoramaScale)}px ${Math.round(worldBounds.height * panoramaScale)}px`,
+                backgroundPosition: `${Math.round(panoramaOffset.x - (frame.x - worldBounds.minX))}px ${Math.round(
+                  panoramaOffset.y - (frame.y - worldBounds.minY),
+                )}px`,
+              };
+
+              return (
+                <div
+                  key={frame.id}
+                  className={`absolute rounded-[52px] border-[14px] border-slate-200 bg-[#e5e7eb] shadow-[0_20px_40px_rgba(0,0,0,0.35)] ${
+                    selectedFrameId === frame.id ? "ring-4 ring-cyan-300/70" : ""
+                  }`}
+                  style={{
+                    left: frame.x,
+                    top: frame.y,
+                    width: frame.width,
+                    height: frame.height,
+                  }}
+                  onClick={() => setSelectedFrameId(frame.id)}
+                >
+                  <div
+                    className="relative h-full w-full overflow-hidden rounded-[38px] bg-[#121a2f]"
+                    style={backgroundStyle}
+                  >
+                    {screenshot ? (
+                      <div
+                        className="absolute inset-0 cursor-grab active:cursor-grabbing"
+                        onPointerDown={(event) => onScreenshotPointerDown(event, frame.id)}
+                        onPointerMove={(event) => onScreenshotPointerMove(event, frame.id)}
+                        onPointerUp={(event) => onScreenshotPointerUp(event, frame.id)}
+                      >
+                        <div
+                          className="absolute"
+                          style={{
+                            left: SCREEN_INSET + screenshotTransform.x,
+                            top: SCREEN_INSET + screenshotTransform.y,
+                            width: frame.width - SCREEN_INSET * 2,
+                            height: frame.height - SCREEN_INSET * 2,
+                            transform: `scale(${screenshotTransform.scale})`,
+                            transformOrigin: "top left",
+                          }}
+                        >
+                          <Image
+                            src={screenshot}
+                            alt="App screenshot"
+                            width={Math.max(1, frame.width - SCREEN_INSET * 2)}
+                            height={Math.max(1, frame.height - SCREEN_INSET * 2)}
+                            unoptimized
+                            draggable={false}
+                            className="h-full w-full select-none object-cover"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+
+            {textLayers.map((layer) => (
+              <div
+                key={layer.id}
+                className={`absolute max-w-[78%] ${selectedTextId === layer.id ? "outline outline-2 outline-cyan-300/70" : ""}`}
+                style={{ left: layer.x, top: layer.y }}
+                onPointerDown={(event) => onTextPointerDown(event, layer)}
+                onPointerMove={(event) => onTextPointerMove(event, layer.id)}
+                onPointerUp={(event) => onTextPointerUp(event, layer.id)}
+              >
+                {editingTextId === layer.id ? (
+                  <textarea
+                    autoFocus
+                    value={getRenderedLayerText(layer)}
+                    onChange={(event) => {
+                      clearTranslations();
+                      setTextLayers((current) =>
+                        current.map((entry) =>
+                          entry.id === layer.id ? { ...entry, text: event.target.value } : entry,
+                        ),
+                      );
+                    }}
+                    onBlur={() => setEditingTextId(null)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        setEditingTextId(null);
+                      }
+                    }}
+                    className="min-h-[120px] w-[720px] resize-none rounded-lg border border-cyan-200/70 bg-[#071028]/85 p-3 leading-none focus:outline-none"
+                    style={{
+                      fontFamily: layer.fontFamily,
+                      fontSize: `${layer.fontSize}px`,
+                      fontWeight: layer.fontWeight,
+                      color: layer.color,
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="cursor-grab whitespace-pre-wrap leading-[0.94] active:cursor-grabbing"
+                    style={{
+                      fontFamily: layer.fontFamily,
+                      fontSize: `${layer.fontSize}px`,
+                      fontWeight: layer.fontWeight,
+                      color: layer.color,
+                    }}
+                  >
+                    {getRenderedLayerText(layer)}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div className="pointer-events-none absolute bottom-5 left-6 flex items-center gap-2 rounded-full bg-black/40 px-4 py-2 text-xs text-slate-200 backdrop-blur">
+              <Move className="h-3.5 w-3.5" />
+              Click text to edit, drag text/screenshots to reposition, click frame to target screenshot scale.
+            </div>
+          </div>
+        </div>
       </main>
     </div>
   );
