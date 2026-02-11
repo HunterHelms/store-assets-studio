@@ -16,6 +16,7 @@ import {
   Scaling,
   Languages,
   LoaderCircle,
+  Copy,
 } from "lucide-react";
 
 type TextLayer = {
@@ -48,10 +49,9 @@ const FONT_OPTIONS = [
   { label: "DM Sans", value: '"DM Sans", sans-serif' },
 ];
 
-const BOARD_WIDTH = 1520;
+const NUM_FRAMES = 3;
 const BOARD_HEIGHT = 940;
 const DEVICE_HEIGHT = 620;
-const DEVICE_GAP = 72;
 const SCREEN_INSET = 18;
 const SOURCE_LANGUAGE = "source";
 const SOURCE_LANGUAGE_LABEL = "Original (English)";
@@ -72,7 +72,11 @@ function uid(prefix: string) {
 
 export function AssetStudio() {
   const [selectedSize, setSelectedSize] = useState(SCREENSHOT_SIZES[2]);
-  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [screenshots, setScreenshots] = useState<Record<string, string | null>>({
+    "frame-1": null,
+    "frame-2": null,
+    "frame-3": null,
+  });
   const [panoramaImage, setPanoramaImage] = useState<string | null>(null);
   const [panoramaScale, setPanoramaScale] = useState(1);
   const [panoramaOffset, setPanoramaOffset] = useState({ x: 0, y: 0 });
@@ -105,19 +109,23 @@ export function AssetStudio() {
   const aspectRatio = selectedSize.width / selectedSize.height;
   const deviceWidth = Math.round(DEVICE_HEIGHT * aspectRatio);
 
-  const frameLayout = useMemo(() => {
-    const totalWidth = deviceWidth * 3 + DEVICE_GAP * 2;
-    const startX = Math.round((BOARD_WIDTH - totalWidth) / 2);
-    const y = 190;
+  // Each panel matches the App Store screenshot aspect ratio exactly
+  const panelWidth = BOARD_HEIGHT * aspectRatio;
+  const boardWidth = panelWidth * NUM_FRAMES;
 
-    return [0, 1, 2].map((index) => ({
-      id: `frame-${index + 1}`,
-      x: startX + index * (deviceWidth + DEVICE_GAP),
-      y,
-      width: deviceWidth,
-      height: DEVICE_HEIGHT,
-    }));
-  }, [deviceWidth]);
+  const frameLayout = useMemo(() => {
+    return Array.from({ length: NUM_FRAMES }, (_, index) => {
+      const panelStartX = index * panelWidth;
+      const frameX = panelStartX + (panelWidth - deviceWidth) / 2;
+      return {
+        id: `frame-${index + 1}`,
+        x: frameX,
+        y: 190,
+        width: deviceWidth,
+        height: DEVICE_HEIGHT,
+      };
+    });
+  }, [deviceWidth, panelWidth]);
 
   const [selectedFrameId, setSelectedFrameId] = useState("frame-2");
   const [screenshotTransforms, setScreenshotTransforms] = useState<Record<string, ScreenshotTransform>>({
@@ -129,6 +137,7 @@ export function AssetStudio() {
   const selectedText = textLayers.find((layer) => layer.id === selectedTextId) ?? null;
   const selectedTransform = screenshotTransforms[selectedFrameId] ?? { x: 0, y: 0, scale: 1 };
   const canEditSourceText = activeStoryboardLanguage === SOURCE_LANGUAGE;
+  const hasAnyScreenshot = Object.values(screenshots).some(Boolean);
 
   const availableStoryboardLanguages = useMemo(() => {
     const translatedLanguages = selectedTargetLanguages
@@ -198,7 +207,7 @@ export function AssetStudio() {
     const newLayer: TextLayer = {
       id: uid("text"),
       text: "Click to edit",
-      x: BOARD_WIDTH / 2 - 180,
+      x: Math.round(boardWidth / 2 - 180),
       y: 130,
       fontFamily: FONT_OPTIONS[1].value,
       fontSize: 64,
@@ -219,18 +228,74 @@ export function AssetStudio() {
     setEditingTextId(null);
   };
 
-  const handleExport = async () => {
-    if (!canvasRef.current) return;
+  // --- Export: capture full canvas then crop into individual panels ---
 
-    const dataUrl = await toPng(canvasRef.current, {
-      pixelRatio: 2,
+  const captureAndCropPanels = async () => {
+    if (!canvasRef.current) return [];
+
+    // This pixelRatio ensures each panel crops to exactly selectedSize.width x selectedSize.height
+    const pixelRatio = selectedSize.height / BOARD_HEIGHT;
+
+    const fullDataUrl = await toPng(canvasRef.current, {
+      pixelRatio,
       cacheBust: true,
+      filter: (node: Node) => {
+        if (node instanceof HTMLElement && node.hasAttribute("data-export-exclude")) return false;
+        return true;
+      },
     });
 
+    const img = new window.Image();
+    await new Promise<void>((resolve) => {
+      img.onload = () => resolve();
+      img.src = fullDataUrl;
+    });
+
+    const cropWidth = Math.round(img.width / NUM_FRAMES);
+    const cropHeight = img.height;
+
+    const panels: string[] = [];
+    for (let i = 0; i < NUM_FRAMES; i++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = selectedSize.width;
+      canvas.height = selectedSize.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(
+        img,
+        i * cropWidth, 0, cropWidth, cropHeight,
+        0, 0, selectedSize.width, selectedSize.height,
+      );
+      panels.push(canvas.toDataURL("image/png"));
+    }
+    return panels;
+  };
+
+  const handleExportScreenshots = async () => {
+    const panels = await captureAndCropPanels();
+    if (!panels.length) return;
+
+    if (panels.length === 1) {
+      const link = document.createElement("a");
+      link.download = `screenshot-1-${selectedSize.id}.png`;
+      link.href = panels[0];
+      link.click();
+      return;
+    }
+
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+
+    panels.forEach((dataUrl, i) => {
+      const base64 = dataUrl.split(",")[1];
+      zip.file(`screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
+    });
+
+    const blob = await zip.generateAsync({ type: "blob" });
     const link = document.createElement("a");
-    link.download = `store-assets-studio-${selectedSize.id}.png`;
-    link.href = dataUrl;
+    link.href = URL.createObjectURL(blob);
+    link.download = `app-store-screenshots-${selectedSize.id}.zip`;
     link.click();
+    URL.revokeObjectURL(link.href);
   };
 
   const handleTranslate = async () => {
@@ -305,19 +370,17 @@ export function AssetStudio() {
         setActiveStoryboardLanguage(code);
         await waitForRender();
 
-        const dataUrl = await toPng(canvasRef.current, {
-          pixelRatio: 2,
-          cacheBust: true,
+        const panels = await captureAndCropPanels();
+        panels.forEach((dataUrl, i) => {
+          const base64 = dataUrl.split(",")[1];
+          zip.file(`${code}/screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
         });
-
-        const base64Data = dataUrl.split(",")[1];
-        zip.file(`store-assets-studio-${selectedSize.id}-${code}.png`, base64Data, { base64: true });
       }
 
       const blob = await zip.generateAsync({ type: "blob" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `store-assets-studio-${selectedSize.id}-all-languages.zip`;
+      link.download = `app-store-screenshots-${selectedSize.id}-all-languages.zip`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch (error) {
@@ -328,20 +391,52 @@ export function AssetStudio() {
     }
   };
 
-  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>, target: "screenshot" | "panorama") => {
+  const handleScreenshotUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
       const imageData = e.target?.result as string;
-      if (target === "screenshot") {
-        setScreenshot(imageData);
-      } else {
-        setPanoramaImage(imageData);
-      }
+      setScreenshots((current) => ({
+        ...current,
+        [selectedFrameId]: imageData,
+      }));
     };
     reader.readAsDataURL(file);
+    event.target.value = "";
+  };
+
+  const handlePanoramaUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const imageData = e.target?.result as string;
+      setPanoramaImage(imageData);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const copyScreenshotToAllFrames = () => {
+    const src = screenshots[selectedFrameId];
+    if (!src) return;
+    const transform = screenshotTransforms[selectedFrameId];
+    setScreenshots((current) => {
+      const next = { ...current };
+      for (let i = 0; i < NUM_FRAMES; i++) {
+        next[`frame-${i + 1}`] = src;
+      }
+      return next;
+    });
+    setScreenshotTransforms((current) => {
+      const next = { ...current };
+      for (let i = 0; i < NUM_FRAMES; i++) {
+        next[`frame-${i + 1}`] = { ...transform };
+      }
+      return next;
+    });
   };
 
   const toggleTargetLanguage = (code: string) => {
@@ -412,7 +507,7 @@ export function AssetStudio() {
   };
 
   const onScreenshotPointerDown = (event: React.PointerEvent<HTMLDivElement>, frameId: string) => {
-    if (!screenshot) return;
+    if (!screenshots[frameId]) return;
     event.stopPropagation();
     setSelectedFrameId(frameId);
 
@@ -525,7 +620,7 @@ export function AssetStudio() {
                 type="file"
                 className="hidden"
                 accept="image/*"
-                onChange={(e) => handleUpload(e, "panorama")}
+                onChange={handlePanoramaUpload}
               />
             </label>
             <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs">
@@ -573,21 +668,55 @@ export function AssetStudio() {
           <section className="space-y-3">
             <div className="flex items-center gap-2 text-slate-300">
               <ImageIcon className="h-4 w-4" />
-              <h2 className="text-xs uppercase tracking-[0.16em]">Screenshot</h2>
+              <h2 className="text-xs uppercase tracking-[0.16em]">Screenshots</h2>
             </div>
+
+            {/* Frame selector thumbnails */}
+            <div className="grid grid-cols-3 gap-2">
+              {frameLayout.map((frame, i) => (
+                <button
+                  key={frame.id}
+                  onClick={() => setSelectedFrameId(frame.id)}
+                  className={`relative aspect-[9/16] overflow-hidden rounded-lg border transition ${
+                    selectedFrameId === frame.id
+                      ? "border-cyan-300/80 ring-2 ring-cyan-300/40"
+                      : "border-white/10 hover:border-white/25"
+                  }`}
+                >
+                  {screenshots[frame.id] ? (
+                    <div
+                      className="h-full w-full bg-cover bg-center"
+                      style={{ backgroundImage: `url(${screenshots[frame.id]})` }}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center bg-white/5 text-xs text-slate-500">
+                      #{i + 1}
+                    </div>
+                  )}
+                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-300">
+                    {i + 1}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Upload for selected frame */}
             <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.03] p-4 text-sm hover:bg-white/10">
               <ImageIcon className="mr-2 h-4 w-4" />
-              {screenshot ? "Replace app screenshot" : "Upload app screenshot"}
+              {screenshots[selectedFrameId]
+                ? `Replace frame ${selectedFrameId.replace("frame-", "#")} screenshot`
+                : `Upload frame ${selectedFrameId.replace("frame-", "#")} screenshot`}
               <input
                 type="file"
                 className="hidden"
                 accept="image/*"
-                onChange={(e) => handleUpload(e, "screenshot")}
+                onChange={handleScreenshotUpload}
               />
             </label>
-            {screenshot ? (
+
+            {screenshots[selectedFrameId] ? (
               <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs">
-                <p className="text-slate-300">Selected frame: {selectedFrameId.replace("frame-", "#")}</p>
+                <p className="text-slate-300">Frame {selectedFrameId.replace("frame-", "#")} controls</p>
                 <label className="block">
                   <span className="mb-2 block text-slate-300">Scale: {selectedTransform.scale.toFixed(2)}</span>
                   <input
@@ -608,12 +737,25 @@ export function AssetStudio() {
                     className="w-full"
                   />
                 </label>
-                <button
-                  onClick={() => setScreenshot(null)}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-rose-200 hover:bg-rose-500/20"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Remove screenshot
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={copyScreenshotToAllFrames}
+                    className="flex items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-white/[0.03] px-3 py-2 text-slate-200 hover:bg-white/10"
+                  >
+                    <Copy className="h-3.5 w-3.5" /> Copy to all
+                  </button>
+                  <button
+                    onClick={() =>
+                      setScreenshots((current) => ({
+                        ...current,
+                        [selectedFrameId]: null,
+                      }))
+                    }
+                    className="flex items-center justify-center gap-1.5 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-rose-200 hover:bg-rose-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Remove
+                  </button>
+                </div>
               </div>
             ) : null}
           </section>
@@ -766,10 +908,10 @@ export function AssetStudio() {
         <div className="border-t border-white/10 p-6">
           <div className="grid grid-cols-2 gap-3">
             <button
-              onClick={handleExport}
+              onClick={handleExportScreenshots}
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-300"
             >
-              <Download className="h-4 w-4" /> Export Board
+              <Download className="h-4 w-4" /> Export {NUM_FRAMES} Screens
             </button>
             <button
               onClick={handleExportAll}
@@ -780,11 +922,16 @@ export function AssetStudio() {
               {isExportingAll ? "Exporting..." : "Export All ZIP"}
             </button>
           </div>
+          {hasAnyScreenshot ? (
+            <p className="mt-2 text-center text-[10px] text-slate-500">
+              Each screenshot exports at {selectedSize.width} x {selectedSize.height}px
+            </p>
+          ) : null}
         </div>
       </aside>
 
       <main className="custom-scrollbar flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#1d2747_0%,#05070d_55%)] p-8">
-        <div className="mx-auto min-w-[1220px] rounded-3xl border border-white/10 bg-[#080d1a]/70 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur">
+        <div className="mx-auto rounded-3xl border border-white/10 bg-[#080d1a]/70 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur" style={{ minWidth: Math.round(boardWidth) + 48 }}>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               {availableStoryboardLanguages.map((language) => (
@@ -813,7 +960,7 @@ export function AssetStudio() {
           <div
             ref={canvasRef}
             className="relative mx-auto overflow-hidden rounded-3xl border border-white/15 bg-[#050812]"
-            style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT }}
+            style={{ width: boardWidth, height: BOARD_HEIGHT }}
             onPointerDown={() => {
               setEditingTextId(null);
             }}
@@ -828,6 +975,7 @@ export function AssetStudio() {
 
             {frameLayout.map((frame) => {
               const screenshotTransform = screenshotTransforms[frame.id] ?? { x: 0, y: 0, scale: 1 };
+              const frameScreenshot = screenshots[frame.id];
               const backgroundStyle = {
                 backgroundImage: panoramaBackground,
                 backgroundSize: `${Math.round(worldBounds.width * panoramaScale)}px ${Math.round(worldBounds.height * panoramaScale)}px`,
@@ -854,7 +1002,7 @@ export function AssetStudio() {
                     className="relative h-full w-full overflow-hidden rounded-[38px] bg-[#121a2f]"
                     style={backgroundStyle}
                   >
-                    {screenshot ? (
+                    {frameScreenshot ? (
                       <div
                         className="absolute inset-0 cursor-grab active:cursor-grabbing"
                         onPointerDown={(event) => onScreenshotPointerDown(event, frame.id)}
@@ -873,7 +1021,7 @@ export function AssetStudio() {
                           }}
                         >
                           <Image
-                            src={screenshot}
+                            src={frameScreenshot}
                             alt="App screenshot"
                             width={Math.max(1, frame.width - SCREEN_INSET * 2)}
                             height={Math.max(1, frame.height - SCREEN_INSET * 2)}
@@ -888,6 +1036,24 @@ export function AssetStudio() {
                 </div>
               );
             })}
+
+            {/* Dotted panel divider lines - excluded from export */}
+            {Array.from({ length: NUM_FRAMES - 1 }, (_, i) => (
+              <div
+                key={`divider-${i}`}
+                data-export-exclude
+                className="pointer-events-none absolute top-0 z-40 h-full"
+                style={{ left: (i + 1) * panelWidth }}
+              >
+                <div className="h-full w-0 border-l-[2px] border-dashed border-white/25" />
+                <div
+                  data-export-exclude
+                  className="absolute -left-3 top-2 rounded bg-black/50 px-1.5 py-0.5 text-[10px] text-white/50 backdrop-blur-sm"
+                >
+                  {i + 1} | {i + 2}
+                </div>
+              </div>
+            ))}
 
             {textLayers.map((layer) => (
               <div
@@ -941,9 +1107,12 @@ export function AssetStudio() {
               </div>
             ))}
 
-            <div className="pointer-events-none absolute bottom-5 left-6 flex items-center gap-2 rounded-full bg-black/40 px-4 py-2 text-xs text-slate-200 backdrop-blur">
+            <div
+              data-export-exclude
+              className="pointer-events-none absolute bottom-5 left-6 flex items-center gap-2 rounded-full bg-black/40 px-4 py-2 text-xs text-slate-200 backdrop-blur"
+            >
               <Move className="h-3.5 w-3.5" />
-              Click text to edit, drag text/screenshots to reposition, click frame to target screenshot scale.
+              Click text to edit, drag to reposition. Click frame to select, upload per-frame screenshots.
             </div>
           </div>
         </div>
