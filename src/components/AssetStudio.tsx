@@ -18,6 +18,9 @@ import {
   LoaderCircle,
   Copy,
   RotateCw,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
 } from "lucide-react";
 
 type TextLayer = {
@@ -30,6 +33,7 @@ type TextLayer = {
   fontSize: number;
   fontWeight: number;
   color: string;
+  textAlign: "left" | "center" | "right";
 };
 
 type ScreenshotTransform = {
@@ -55,11 +59,7 @@ const NUM_FRAMES = 3;
 const BOARD_HEIGHT = 940;
 const DEVICE_HEIGHT = 620;
 const SCREEN_INSET = 18;
-const EXPORT_TARGET = {
-  id: "iphone-6.7",
-  width: 1284,
-  height: 2778,
-};
+const DEFAULT_SIZE_ID = "iphone-6.7";
 const SOURCE_LANGUAGE = "source";
 const SOURCE_LANGUAGE_LABEL = "Original (English)";
 const TRANSLATION_LANGUAGES: LanguageOption[] = [
@@ -174,7 +174,7 @@ function normalizeRedmontTranslations(
 
 export function AssetStudio() {
   const [selectedSize, setSelectedSize] = useState(
-    SCREENSHOT_SIZES.find((size) => size.id === EXPORT_TARGET.id) ?? SCREENSHOT_SIZES[0],
+    SCREENSHOT_SIZES.find((size) => size.id === DEFAULT_SIZE_ID) ?? SCREENSHOT_SIZES[0],
   );
   const [screenshots, setScreenshots] = useState<Record<string, string | null>>({
     "frame-1": null,
@@ -198,6 +198,7 @@ export function AssetStudio() {
       fontSize: 84,
       fontWeight: 700,
       color: "#ffffff",
+      textAlign: "left",
     },
   ]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(textLayers[0]?.id ?? null);
@@ -329,6 +330,7 @@ export function AssetStudio() {
       fontSize: 64,
       fontWeight: 700,
       color: "#f8fafc",
+      textAlign: "left",
     };
     setTextLayers((current) => [...current, newLayer]);
     clearTranslations();
@@ -349,8 +351,10 @@ export function AssetStudio() {
   const captureAndCropPanels = async () => {
     if (!canvasRef.current) return [];
 
-    // Render at fixed App Store export dimensions.
-    const pixelRatio = EXPORT_TARGET.height / BOARD_HEIGHT;
+    // Use actual element dimensions to calculate an accurate pixel ratio.
+    const elWidth = canvasRef.current.offsetWidth;
+    const elHeight = canvasRef.current.offsetHeight;
+    const pixelRatio = selectedSize.height / elHeight;
 
     const fullDataUrl = await toPng(canvasRef.current, {
       pixelRatio,
@@ -367,37 +371,40 @@ export function AssetStudio() {
       img.src = fullDataUrl;
     });
 
-    const cropWidth = Math.round(img.width / NUM_FRAMES);
-    const cropHeight = img.height;
-
     const panels: string[] = [];
-    const targetAspect = EXPORT_TARGET.width / EXPORT_TARGET.height;
 
     for (let i = 0; i < NUM_FRAMES; i++) {
       const canvas = document.createElement("canvas");
-      canvas.width = EXPORT_TARGET.width;
-      canvas.height = EXPORT_TARGET.height;
+      canvas.width = selectedSize.width;
+      canvas.height = selectedSize.height;
       const ctx = canvas.getContext("2d")!;
 
-      const panelStartX = i * cropWidth;
-      const sourceAspect = cropWidth / cropHeight;
-      let sourceX = panelStartX;
-      let sourceY = 0;
-      let sourceWidth = cropWidth;
-      let sourceHeight = cropHeight;
+      // Use proportional boundaries to avoid rounding drift.
+      const srcX = Math.round((i / NUM_FRAMES) * img.width);
+      const srcXEnd = Math.round(((i + 1) / NUM_FRAMES) * img.width);
+      const srcW = srcXEnd - srcX;
+
+      // Crop to exact target aspect ratio, centering any excess.
+      const targetAspect = selectedSize.width / selectedSize.height;
+      const sourceAspect = srcW / img.height;
+
+      let finalX = srcX;
+      let finalY = 0;
+      let finalW = srcW;
+      let finalH = img.height;
 
       if (sourceAspect > targetAspect) {
-        sourceWidth = cropHeight * targetAspect;
-        sourceX += (cropWidth - sourceWidth) / 2;
+        finalW = Math.round(img.height * targetAspect);
+        finalX += Math.round((srcW - finalW) / 2);
       } else if (sourceAspect < targetAspect) {
-        sourceHeight = cropWidth / targetAspect;
-        sourceY = (cropHeight - sourceHeight) / 2;
+        finalH = Math.round(srcW / targetAspect);
+        finalY = Math.round((img.height - finalH) / 2);
       }
 
       ctx.drawImage(
         img,
-        sourceX, sourceY, sourceWidth, sourceHeight,
-        0, 0, EXPORT_TARGET.width, EXPORT_TARGET.height,
+        finalX, finalY, finalW, finalH,
+        0, 0, selectedSize.width, selectedSize.height,
       );
       panels.push(canvas.toDataURL("image/png"));
     }
@@ -410,7 +417,7 @@ export function AssetStudio() {
 
     if (panels.length === 1) {
       const link = document.createElement("a");
-      link.download = `screenshot-1-${EXPORT_TARGET.id}.png`;
+      link.download = `screenshot-1-${selectedSize.id}.png`;
       link.href = panels[0];
       link.click();
       return;
@@ -421,13 +428,13 @@ export function AssetStudio() {
 
     panels.forEach((dataUrl, i) => {
       const base64 = dataUrl.split(",")[1];
-      zip.file(`screenshot-${i + 1}-${EXPORT_TARGET.id}.png`, base64, { base64: true });
+      zip.file(`screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
     });
 
     const blob = await zip.generateAsync({ type: "blob" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `app-store-screenshots-${EXPORT_TARGET.id}.zip`;
+    link.download = `app-store-screenshots-${selectedSize.id}.zip`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
@@ -521,14 +528,14 @@ export function AssetStudio() {
         const panels = await captureAndCropPanels();
         panels.forEach((dataUrl, i) => {
           const base64 = dataUrl.split(",")[1];
-          zip.file(`${code}/screenshot-${i + 1}-${EXPORT_TARGET.id}.png`, base64, { base64: true });
+          zip.file(`${code}/screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
         });
       }
 
       const blob = await zip.generateAsync({ type: "blob" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `app-store-screenshots-${EXPORT_TARGET.id}-all-languages.zip`;
+      link.download = `app-store-screenshots-${selectedSize.id}-all-languages.zip`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch (error) {
@@ -1123,6 +1130,27 @@ export function AssetStudio() {
                   ))}
                 </select>
               </label>
+              <div>
+                <span className="mb-2 block text-slate-300">Alignment</span>
+                <div className="grid grid-cols-3 gap-1">
+                  {(["left", "center", "right"] as const).map((align) => (
+                    <button
+                      key={align}
+                      onClick={() => updateSelectedText({ textAlign: align })}
+                      disabled={!selectedText}
+                      className={`flex items-center justify-center rounded-lg border px-2 py-1.5 transition ${
+                        selectedText?.textAlign === align
+                          ? "border-cyan-300/80 bg-cyan-400/20 text-cyan-100"
+                          : "border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/10"
+                      } disabled:cursor-not-allowed disabled:opacity-40`}
+                    >
+                      {align === "left" && <AlignLeft className="h-3.5 w-3.5" />}
+                      {align === "center" && <AlignCenter className="h-3.5 w-3.5" />}
+                      {align === "right" && <AlignRight className="h-3.5 w-3.5" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <label className="block">
                 <span className="mb-2 block text-slate-300">Text Width: {Math.round(selectedText?.width ?? 0)}px</span>
                 <input
@@ -1197,7 +1225,7 @@ export function AssetStudio() {
           </div>
           {hasAnyScreenshot ? (
             <p className="mt-2 text-center text-[10px] text-slate-500">
-              Each screenshot exports at {EXPORT_TARGET.width} x {EXPORT_TARGET.height}px
+              Each screenshot exports at {selectedSize.width} x {selectedSize.height}px
             </p>
           ) : null}
         </div>
@@ -1231,8 +1259,12 @@ export function AssetStudio() {
           </div>
 
           <div
+            className="mx-auto overflow-hidden rounded-3xl border border-white/15"
+            style={{ width: boardWidth }}
+          >
+          <div
             ref={canvasRef}
-            className="relative mx-auto overflow-hidden rounded-3xl border border-white/15"
+            className="relative overflow-hidden"
             style={{ width: boardWidth, height: BOARD_HEIGHT, ...canvasBackgroundStyle }}
             onPointerDown={() => {
               setEditingTextId(null);
@@ -1381,6 +1413,7 @@ export function AssetStudio() {
                       fontSize: `${layer.fontSize}px`,
                       fontWeight: layer.fontWeight,
                       color: layer.color,
+                      textAlign: layer.textAlign,
                     }}
                   />
                 ) : (
@@ -1391,6 +1424,7 @@ export function AssetStudio() {
                       fontSize: `${layer.fontSize}px`,
                       fontWeight: layer.fontWeight,
                       color: layer.color,
+                      textAlign: layer.textAlign,
                     }}
                   >
                     {getRenderedLayerText(layer)}
@@ -1406,6 +1440,7 @@ export function AssetStudio() {
               <Move className="h-3.5 w-3.5" />
               Drag devices to reposition. Drag screenshots inside frames. Click text to edit.
             </div>
+          </div>
           </div>
         </div>
       </main>
