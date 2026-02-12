@@ -55,6 +55,11 @@ const NUM_FRAMES = 3;
 const BOARD_HEIGHT = 940;
 const DEVICE_HEIGHT = 620;
 const SCREEN_INSET = 18;
+const EXPORT_TARGET = {
+  id: "iphone-6.7",
+  width: 1284,
+  height: 2778,
+};
 const SOURCE_LANGUAGE = "source";
 const SOURCE_LANGUAGE_LABEL = "Original (English)";
 const TRANSLATION_LANGUAGES: LanguageOption[] = [
@@ -72,8 +77,105 @@ function uid(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function extractJsonBlock(text: string) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function parseMaybeJson(value: unknown) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return extractJsonBlock(trimmed);
+  }
+}
+
+function normalizeTranslationList(value: unknown, textCount: number) {
+  if (Array.isArray(value)) {
+    return value.slice(0, textCount).map((item) => String(item ?? ""));
+  }
+
+  if (!value || typeof value !== "object") return null;
+
+  const candidate = value as Record<string, unknown>;
+
+  const preferredArray =
+    (Array.isArray(candidate.translations) && candidate.translations) ||
+    (Array.isArray(candidate.texts) && candidate.texts) ||
+    (Array.isArray(candidate.items) && candidate.items) ||
+    null;
+
+  if (preferredArray) {
+    return preferredArray.slice(0, textCount).map((item) => String(item ?? ""));
+  }
+
+  const numericEntries = Object.entries(candidate)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, item]) => String(item ?? ""));
+
+  if (numericEntries.length) {
+    return numericEntries.slice(0, textCount);
+  }
+
+  return null;
+}
+
+function normalizeRedmontTranslations(
+  payload: Record<string, unknown>,
+  targetLanguages: string[],
+  textCount: number,
+) {
+  const normalized: Record<string, string[]> = {};
+
+  const directCandidates = [
+    payload.translations,
+    payload.result,
+    payload.data,
+    parseMaybeJson(payload.output),
+    parseMaybeJson(payload.content),
+    payload,
+  ];
+
+  for (const rawCandidate of directCandidates) {
+    const candidate = parseMaybeJson(rawCandidate);
+    if (!candidate || typeof candidate !== "object") continue;
+    const source = candidate as Record<string, unknown>;
+
+    for (const code of targetLanguages) {
+      if (normalized[code]) continue;
+      const perLanguageRaw =
+        source[code] ??
+        (source.translations &&
+        typeof source.translations === "object" &&
+        !Array.isArray(source.translations)
+          ? (source.translations as Record<string, unknown>)[code]
+          : undefined);
+
+      const normalizedList = normalizeTranslationList(perLanguageRaw, textCount);
+      if (normalizedList?.length) {
+        normalized[code] = normalizedList;
+      }
+    }
+  }
+
+  return Object.keys(normalized).length ? normalized : null;
+}
+
 export function AssetStudio() {
-  const [selectedSize, setSelectedSize] = useState(SCREENSHOT_SIZES[2]);
+  const [selectedSize, setSelectedSize] = useState(
+    SCREENSHOT_SIZES.find((size) => size.id === EXPORT_TARGET.id) ?? SCREENSHOT_SIZES[0],
+  );
   const [screenshots, setScreenshots] = useState<Record<string, string | null>>({
     "frame-1": null,
     "frame-2": null,
@@ -247,8 +349,8 @@ export function AssetStudio() {
   const captureAndCropPanels = async () => {
     if (!canvasRef.current) return [];
 
-    // This pixelRatio ensures each panel crops to exactly selectedSize.width x selectedSize.height
-    const pixelRatio = selectedSize.height / BOARD_HEIGHT;
+    // Render at fixed App Store export dimensions.
+    const pixelRatio = EXPORT_TARGET.height / BOARD_HEIGHT;
 
     const fullDataUrl = await toPng(canvasRef.current, {
       pixelRatio,
@@ -269,15 +371,33 @@ export function AssetStudio() {
     const cropHeight = img.height;
 
     const panels: string[] = [];
+    const targetAspect = EXPORT_TARGET.width / EXPORT_TARGET.height;
+
     for (let i = 0; i < NUM_FRAMES; i++) {
       const canvas = document.createElement("canvas");
-      canvas.width = selectedSize.width;
-      canvas.height = selectedSize.height;
+      canvas.width = EXPORT_TARGET.width;
+      canvas.height = EXPORT_TARGET.height;
       const ctx = canvas.getContext("2d")!;
+
+      const panelStartX = i * cropWidth;
+      const sourceAspect = cropWidth / cropHeight;
+      let sourceX = panelStartX;
+      let sourceY = 0;
+      let sourceWidth = cropWidth;
+      let sourceHeight = cropHeight;
+
+      if (sourceAspect > targetAspect) {
+        sourceWidth = cropHeight * targetAspect;
+        sourceX += (cropWidth - sourceWidth) / 2;
+      } else if (sourceAspect < targetAspect) {
+        sourceHeight = cropWidth / targetAspect;
+        sourceY = (cropHeight - sourceHeight) / 2;
+      }
+
       ctx.drawImage(
         img,
-        i * cropWidth, 0, cropWidth, cropHeight,
-        0, 0, selectedSize.width, selectedSize.height,
+        sourceX, sourceY, sourceWidth, sourceHeight,
+        0, 0, EXPORT_TARGET.width, EXPORT_TARGET.height,
       );
       panels.push(canvas.toDataURL("image/png"));
     }
@@ -290,7 +410,7 @@ export function AssetStudio() {
 
     if (panels.length === 1) {
       const link = document.createElement("a");
-      link.download = `screenshot-1-${selectedSize.id}.png`;
+      link.download = `screenshot-1-${EXPORT_TARGET.id}.png`;
       link.href = panels[0];
       link.click();
       return;
@@ -301,13 +421,13 @@ export function AssetStudio() {
 
     panels.forEach((dataUrl, i) => {
       const base64 = dataUrl.split(",")[1];
-      zip.file(`screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
+      zip.file(`screenshot-${i + 1}-${EXPORT_TARGET.id}.png`, base64, { base64: true });
     });
 
     const blob = await zip.generateAsync({ type: "blob" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `app-store-screenshots-${selectedSize.id}.zip`;
+    link.download = `app-store-screenshots-${EXPORT_TARGET.id}.zip`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
@@ -330,18 +450,32 @@ export function AssetStudio() {
       });
 
       const payload = (await response.json()) as {
-        translations?: Record<string, string[]>;
+        translations?: unknown;
+        result?: unknown;
+        data?: unknown;
+        output?: unknown;
+        content?: unknown;
         error?: string;
         details?: string;
       };
 
-      if (!response.ok || !payload.translations) {
+      if (!response.ok) {
         throw new Error(payload.error ?? "Translation failed.");
+      }
+
+      const normalizedTranslations = normalizeRedmontTranslations(
+        payload as Record<string, unknown>,
+        selectedTargetLanguages,
+        textLayers.length,
+      );
+
+      if (!normalizedTranslations) {
+        throw new Error(payload.error ?? "Translation failed: unexpected Redmont response shape.");
       }
 
       const mapped: Record<string, Record<string, string>> = {};
 
-      for (const [languageCode, translatedTexts] of Object.entries(payload.translations)) {
+      for (const [languageCode, translatedTexts] of Object.entries(normalizedTranslations)) {
         const perLayer: Record<string, string> = {};
         textLayers.forEach((layer, index) => {
           perLayer[layer.id] = translatedTexts[index] ?? layer.text;
@@ -387,14 +521,14 @@ export function AssetStudio() {
         const panels = await captureAndCropPanels();
         panels.forEach((dataUrl, i) => {
           const base64 = dataUrl.split(",")[1];
-          zip.file(`${code}/screenshot-${i + 1}-${selectedSize.id}.png`, base64, { base64: true });
+          zip.file(`${code}/screenshot-${i + 1}-${EXPORT_TARGET.id}.png`, base64, { base64: true });
         });
       }
 
       const blob = await zip.generateAsync({ type: "blob" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `app-store-screenshots-${selectedSize.id}-all-languages.zip`;
+      link.download = `app-store-screenshots-${EXPORT_TARGET.id}-all-languages.zip`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch (error) {
@@ -1063,7 +1197,7 @@ export function AssetStudio() {
           </div>
           {hasAnyScreenshot ? (
             <p className="mt-2 text-center text-[10px] text-slate-500">
-              Each screenshot exports at {selectedSize.width} x {selectedSize.height}px
+              Each screenshot exports at {EXPORT_TARGET.width} x {EXPORT_TARGET.height}px
             </p>
           ) : null}
         </div>

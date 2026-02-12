@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 const REDMONT_API_URL =
   process.env.REDMONT_TRANSLATION_API_URL ??
-  "https://redmont-digital-api.netlify.app/.netlify/functions/generate-llms";
+  "https://redmont-digital-api.netlify.app/.netlify/functions/main";
 
 type TranslationRequestBody = {
   sourceLanguage?: string;
@@ -74,12 +74,8 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        task: "translate_text_layers",
-        sourceLanguage,
+        textToTranslate: texts.join("\n---\n"),
         targetLanguages,
-        texts,
-        prompt,
-        messages: [{ role: "user", content: prompt }],
       }),
     });
 
