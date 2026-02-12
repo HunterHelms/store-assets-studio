@@ -21,24 +21,23 @@ function extractJsonBlock(text: string) {
   }
 }
 
-function normalizeTranslations(raw: unknown, targetLanguages: string[], textCount: number) {
+function normalizeTranslations(raw: any, targetLanguages: string[], textCount: number) {
   if (!raw || typeof raw !== "object") return null;
 
-  const candidate = raw as Record<string, unknown>;
-  const source =
-    (candidate.translations as Record<string, unknown> | undefined) ??
-    (candidate.result as Record<string, unknown> | undefined) ??
-    (candidate.data as Record<string, unknown> | undefined) ??
-    candidate;
-
+  // The API returns { "translations": { "Spanish": "Hola Mundo" } }
+  // Studio expects { "translations": { "es": ["Hola Mundo"] } }
+  const source = raw.translations || raw;
   const normalized: Record<string, string[]> = {};
 
-  for (const code of targetLanguages) {
-    const value = source?.[code];
-    if (!Array.isArray(value)) continue;
-    const asStrings = value.slice(0, textCount).map((item) => String(item ?? ""));
-    if (asStrings.length === textCount) {
-      normalized[code] = asStrings;
+  for (const lang of Object.keys(source)) {
+    const value = source[lang];
+    // Map language names (Spanish) to codes (es) if necessary, 
+    // or just handle the raw strings.
+    // Studio expects an array of strings per language.
+    if (typeof value === 'string') {
+      normalized[lang] = [value];
+    } else if (Array.isArray(value)) {
+      normalized[lang] = value.map(v => String(v));
     }
   }
 
